@@ -1,0 +1,66 @@
+pipeline {
+    agent any
+    environment {
+        DEPLOY_DIR = '/home/user/app-test/main'  // 실제 배포 디렉토리 경로
+        JAR_NAME = 'demo-0.0.1-SNAPSHOT.jar'  // 빌드된 JAR 파일의 이름
+        REPO_URL = 'https://github.com/osc-hoony-song/spring-demo.git'
+        DEST_SERVER = '192.168.0.12'  // 대상 서버 IP
+        DEST_USER = 'user'  // 대상 서버 사용자명
+        CREDENTIALS_ID = '192.168.0.12-ssh'  // Jenkins 크리덴셜 ID
+    }
+    options {
+        skipDefaultCheckout()  // 자동 체크아웃 방지
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    def branchName = env.BRANCH_NAME
+                    echo "Building branch: ${branchName}"
+                    checkout([$class: 'GitSCM', branches: [[name: "refs/heads/${branchName}"]],
+                              userRemoteConfigs: [[url: env.REPO_URL]],
+                              doGenerateSubmoduleConfigurations: false, submoduleCfg: [],
+                              extensions: [[$class: 'CloneOption', depth: 1, shallow: true]]])
+                }
+            }
+        }
+        stage('Build') {
+            steps {
+                // 빌드 도구 사용 (예: Maven)
+                sh 'chmod +x ./gradlew'
+                sh './gradlew clean build'
+            }
+        }
+        stage('Test') {
+            steps {
+                // 테스트 실행
+                sh './gradlew test'
+            }
+        }
+        stage('Deploy') {
+            steps {
+                script {
+                    // 빌드된 JAR 파일 경로 확인
+                    def jarFile = sh(script: "ls build/libs/*.jar | grep -v plain", returnStdout: true).trim()
+                    echo "Built JAR file: ${jarFile}"
+                    env.JAR_FILE = jarFile
+                }
+                withCredentials([sshUserPrivateKey(credentialsId: env.CREDENTIALS_ID, keyFileVariable: 'SSH_KEY')]) {
+                    sh '''
+                    SCP_COMMAND="scp -i $SSH_KEY -o StrictHostKeyChecking=no ${JAR_FILE} ${DEST_USER}@${DEST_SERVER}:${DEPLOY_DIR}/${JAR_NAME}"
+                    eval $SCP_COMMAND
+                    '''
+                }
+
+                // 대상 서버에서 업데이트 스크립트 실행
+                withCredentials([sshUserPrivateKey(credentialsId: env.CREDENTIALS_ID, keyFileVariable: 'SSH_KEY')]) {
+                    sh '''
+                    SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no ${DEST_USER}@${DEST_SERVER} 'nohup ${DEPLOY_DIR}/update.sh > ${DEPLOY_DIR}/update.log 2>&1 &'"
+                    eval $SSH_COMMAND
+                    '''
+                }
+            }
+        }
+    }
+}
